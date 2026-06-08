@@ -220,10 +220,12 @@ hardcoded strings, three-layer agreement is N/A since no new GPU field — we re
 
 ## 13. Milestones / roadmap
 
-- **M0 — Spec & schema** (this doc): finalize the tonal-signature descriptor and the LLM output
-  JSON schema + ranges.
-- **M1 — Local signature engine**: Rust extraction + aggregation + `signatureDistance`; unit-tested
-  on known grades. No LLM yet — prove the measurement is content-independent.
+- **M0 — Spec & schema** (this doc): finalize the tonal-signature descriptor (Appendix A), the LLM
+  output JSON schema + ranges (Appendix B), the `signatureDistance` weights (Appendix C), and the
+  M1 acceptance-test design (Appendix D).
+- **M1 — Local signature engine**: Rust extraction + aggregation + `signatureDistance`; ship the
+  **Appendix-D acceptance harness** and pass its gates. No LLM yet — *prove the measurement is
+  content-independent before anything else is built.*
 - **M2 — LLM proposal (one-shot)**: connector routing, vision+stats request, strict-schema
   validate/clamp, apply to current image, short summary. Mode A only. Instant apply.
 - **M3 — Refine loop + failure UX**: render→measure→refine (≤2 passes), best-effort + gap
@@ -352,6 +354,109 @@ failure → one re-ask with the error, else best-effort + gap explanation (D14).
 (D9) appends a `measuredGap` object (edited-target signature minus reference signature, per field)
 to the next request so the LLM corrects in the right direction.
 
+---
+
+## Appendix C — `signatureDistance` weights (v1)
+
+`signatureDistance(A, B)` is a weighted Euclidean distance over the Appendix-A fields, **after each
+field is normalized to roughly `[-1, 1]` (or `[0, 1]`)** so weights express *relative perceptual
+importance*, not unit scale. Hues are compared as **circular** differences (shortest arc), scaled by
+the band's saturation so a hue swing on a near-gray band barely counts.
+
+```
+distance² = Σ  wᵢ · dᵢ²
+```
+
+**Weights (sum ≈ 1.0). These are starting values to be tuned against the M1 corpus, not gospel.**
+
+| Group → field | Weight | Why this weight |
+|---|---:|---|
+| **whiteBalance.tempBias** | 0.16 | WB cast is the single most identity-defining part of a "look"; humans read it instantly. |
+| **whiteBalance.tintBias** | 0.08 | Green/magenta matters but less than temp; often subtle in stylistic grades. |
+| **tone.contrastSlope** | 0.12 | Overall contrast is a primary stylistic axis (punchy vs. flat). |
+| **tone.shadowLift** (matte) | 0.10 | The faded/matte-black tendency is a strong, recognizable signature (film emulation, "moody"). |
+| **tone.highlightRolloff** | 0.07 | Soft vs. hard highlights distinguishes filmic looks. |
+| **tone.midtoneGamma** | 0.05 | Midtone push; secondary to slope + endpoints. |
+| **tone.blackPoint / whitePoint** | 0.03 each (0.06) | Endpoint placement; partly correlated with slope/lift, so down-weighted to avoid double-counting. |
+| **colorGrade.shadows {hue,sat}** | 0.09 | Split-toning shadows (e.g. teal shadows) is a hallmark of graded looks. |
+| **colorGrade.highlights {hue,sat}** | 0.07 | Highlight tint (e.g. warm/orange highlights) — the other half of teal-and-orange. |
+| **colorGrade.midtones {hue,sat}** | 0.04 | Less commonly the defining move; still relevant. |
+| **colorGrade.balance + globalCast** | 0.03 | Overall weighting/cast; small. |
+| **saturation.global** | 0.06 | Muted vs. vivid is a clear stylistic axis. |
+| **saturation.vibranceSkew** | 0.02 | Skin-protect / muted-boost tendency; subtle. |
+| **saturation.perHue (8 bands)** | 0.05 total (~0.006 each) | Per-band tendencies matter collectively but no single band should dominate. |
+| **saturation.perHueLuma (8 bands)** | 0.02 total | Lowest weight; noisy to estimate, easy to over-fit. Kept low deliberately. |
+
+**Design rationale**
+- **WB + contrast + split-tone carry ~0.6 of the weight.** These are what a human names when
+  describing a look ("warm, contrasty, teal shadows"), so the metric should agree with intuition —
+  and so the *teaching text* lines up with the *measured gap*.
+- **Brightness/exposure has weight 0** — it is not in the descriptor at all (D5). The metric is
+  blind to how bright the scene was.
+- **Per-hue-luma is near-zero** because it is the noisiest feature on real photos and the easiest
+  way to make the metric chase content instead of grade (the central risk in §14).
+- Hue terms are **saturation-gated**: `dhue² · min(satA, satB)` so a hue reading on an unsaturated
+  zone (where hue is ill-defined) contributes almost nothing.
+
+**Acceptance for the weights (part of M1):** with these weights, the corpus test in Appendix D must
+pass with a comfortable margin between the "same-grade" and "different-grade" distance
+distributions. If it doesn't, re-tune *weights first*, descriptor *fields second*.
+
+## Appendix D — M1 acceptance-test harness
+
+Goal: **prove the signature is content-independent before any LLM work.** M1 ships the Rust
+extractor + `signatureDistance` and this harness; M2 does not start until D passes.
+
+### Corpus
+
+- **Scenes**: ≥ 8 visually diverse base images (portrait, landscape, indoor low-light, high-key
+  snow, neon night, foliage, skin-tone close-up, architectural) — ideally as RAW/neutral TIFF so
+  grades are applied cleanly.
+- **Grades**: ≥ 5 distinct, well-separated looks, each expressed as a RapidRAW preset or a LUT:
+  e.g. `G1 warm-film-matte`, `G2 teal-orange-punchy`, `G3 cool-clean`, `G4 vintage-faded`,
+  `G5 high-contrast-bw-ish`. Plus `G0 = ungraded`.
+- Apply every grade to every scene → an `8 × 6` matrix of graded images (export at a fixed size).
+
+### Metrics computed
+
+For all image pairs, compute `signatureDistance`, then bucket:
+- **intra-grade** (same grade, different scene) distances — should be **small**.
+- **inter-grade** (different grade) distances — should be **large**.
+- **vs-ungraded** (graded vs its own G0 scene) — should be **large** (proves we detect the grade,
+  not the scene).
+
+### Pass criteria (gates)
+
+1. **Separation**: `max(intra-grade distance)` < `min(inter-grade distance)` — i.e. the two
+   distributions don't overlap. (Strong form. Weak fallback: 95th-percentile intra < 5th-percentile
+   inter, with the overlap logged.)
+2. **Content-independence**: for each grade, the std-dev of intra-grade distance across scenes is
+   below a threshold τ (the same look on a portrait vs. a landscape scores nearly the same).
+3. **Sensitivity**: every graded image is farther from its ungraded original than from any
+   same-grade different-scene image (we react to grade more than to content).
+4. **Nearest-neighbor classification**: label each graded image by its nearest neighbor's grade;
+   **≥ 95% accuracy**. (This is the headline number to report.)
+5. **WB robustness**: criteria 1–4 still hold on a subset where scenes have strongly colored
+   subjects (red dress, green field) — guards the WB-on-neutral estimator (the §14 risk).
+
+### Harness shape (proposed)
+
+- A Rust integration test (`src-tauri/tests/tone_signature.rs`) or a small dev-only binary that:
+  loads the corpus from a fixtures dir, runs the extractor, builds the distance matrix, computes the
+  five metrics, and asserts the gates — emitting a CSV/heatmap for human inspection on failure.
+- Corpus images live **outside the repo** (large/licensing); the test reads a path from an env var
+  and **skips with a clear message** when absent, so CI stays green without the fixtures while the
+  gate is runnable locally. (Document this in the test — don't silently pass.)
+- Report artifact: a distance heatmap (scenes × grades) makes overlaps obvious at a glance; attach
+  it to the M1 PR.
+
+### If it fails
+
+Tune in this order (cheapest first): (1) `signatureDistance` **weights** (Appendix C); (2) hue
+saturation-gating / normalization; (3) the **neutral-pixel selection** for WB; (4) add/remove
+**descriptor fields** (Appendix A). Re-run the harness after each change. Only when D passes does the
+LLM proposal work (M2) begin.
+
 ## Verification
 
 Grounded against: `src/utils/adjustments.ts` (`Adjustments`), `src/hooks/usePresets.ts` +
@@ -360,5 +465,9 @@ Grounded against: `src/utils/adjustments.ts` (`Adjustments`), `src/hooks/usePres
 saturation, center/edge luma), `src-tauri/src/ai_connector.rs` (reqwest-based connector pattern),
 `src/components/panel/right/RightPanelSwitcher.tsx` (tab pattern to mirror), and `App.tsx`
 left-panel/`FolderTree` rendering. All "touch points" are *proposed* and must be re-verified at
-implementation time. Appendix A/B descriptors and schemas are v1 proposals to be finalized/tested
-in M0–M1.
+implementation time. Appendices A–D (descriptor, LLM schema, distance weights, acceptance harness)
+are v1 proposals; the weights and gates are tuning targets to be validated against the M1 corpus.
+Slider ranges cited (most tonal/color = −100..100; exposure = −5..5 EV; color-grade wheel hue =
+0..360, blending 0..100) were read from `src/components/adjustments/{Basic,Color}.tsx` and
+`src/components/ui/ColorWheel.tsx`; HSL/colorGrading shapes from `src/utils/adjustments.ts`
+(`Hsl`, `ColorGradingProps`, `HueSatLum`).
