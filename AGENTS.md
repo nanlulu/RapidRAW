@@ -14,6 +14,9 @@ A full agent onboarding pack lives in **[`.ai/`](.ai/)**. Read it in order befor
 5. [`.ai/04-recipes.md`](.ai/04-recipes.md) — step-by-step playbooks for common changes.
 6. [`.ai/glossary.md`](.ai/glossary.md) — domain terms (sidecar, transform_hash, AiPatch, …).
 
+Feature specs live in [`.ai/specs/`](.ai/specs/) — e.g.
+[`fangse-tone-match.md`](.ai/specs/fangse-tone-match.md) (仿色 / Tone Match, draft, not yet built).
+
 ## 30-second model
 
 - **Frontend** (`src/`, React/TS) owns UI + edit **state** (5 Zustand stores). The current image's

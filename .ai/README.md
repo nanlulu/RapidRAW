@@ -22,6 +22,12 @@ against it; treat them as a map, not as ground truth. When a doc and the code di
    most often asked to make (add an adjustment, add a Tauri command, add a mask type, …).
 6. **[`glossary.md`](glossary.md)** — domain terms (sidecar, transform_hash, AiPatch, …).
 
+### Feature specs
+
+- **[`specs/fangse-tone-match.md`](specs/fangse-tone-match.md)** — 仿色 / Tone Match: AI-assisted,
+  explainable tone emulation (reference photos → derived `Adjustments` + teaching breakdown).
+  Draft spec, not yet implemented.
+
 ## The 30-second model
 
 - **Frontend** (`src/`, TypeScript/React) owns all UI and the editing **state** (5 Zustand
